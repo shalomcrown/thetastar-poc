@@ -22,7 +22,8 @@
 #include <geos/util/IllegalArgumentException.h>
 #include <geos/operation/linemerge/LineMerger.h>
 #include <geos/operation/polygonize/Polygonizer.h>
-#include <proj.h>
+#include "gdal_priv.h"
+#include "cpl_conv.h"
 #include <limits>
 #include <vector>
 #include <list>
@@ -45,8 +46,6 @@ using geos::util::GEOSException;
 using geos::util::IllegalArgumentException;
 
 GeometryFactory::Ptr global_factory;
-
-PJ_CONTEXT *pjContext;
 
 
 double zone3points[][2] = {{35.2594967539393,32.1872363481983},{35.2739069684505,32.1869022628542},{35.2741742367258,32.1812450843598},{35.2703879361587,32.1780378650559},{35.2673143509925,32.1782605886187},{35.2666684526605,32.17723606023},{35.2675816192678,32.1759442635659},{35.2706774767903,32.177080153736},{35.271151095,32.175571259},{35.2672475339237,32.1710777537194},{35.2633053268627,32.1700086806181},{35.2584944979068,32.1718127414765},{35.2517014292424,32.1780601374122},{35.2545522908458,32.1867018116477},{35.2594967539393,32.1872363481983}};
@@ -120,7 +119,7 @@ Polygon* polygonFromArray(double pointArray[][2], int nPoints) {
 
 // --------------------------------------------------------
 
-string epsgUtmCodeFromWgs(Point *point) {
+string epsgUtmStringFromWgs(Point *point) {
     int epsgNumber = 32630 + (int)ceil(point->getY() / 6.0);
 
     if (point->getX() < 0) {
@@ -132,49 +131,95 @@ string epsgUtmCodeFromWgs(Point *point) {
     return outout.str();
 }
 
+int epsgUtmCodeFromWgs(Point *point) {
+    int epsgNumber = 32630 + (int)ceil(point->getY() / 6.0);
+
+    if (point->getX() < 0) {
+        epsgNumber += 100;
+    }
+
+    return epsgNumber;
+}
+
 // --------------------------------------------------------
 
-Point *wgsToUtmConv(Point *input, PJ *conversion) {
-    PJ_COORD point =  proj_coord(input->getX(), input->getY(), 0, 0);
-    PJ_COORD pointResult = proj_trans(conversion, PJ_FWD, point);
+Point *wgsToUtmConv(Point *input, OGRCoordinateTransformation *conversion) {
 
-    return global_factory->createPoint(Coordinate(pointResult.enu.e, pointResult.enu.n));
+    double x = input->getX();
+    double y = input->getY();
+
+    cout << "Original " << x << "," << y << endl;
+    conversion->Transform(1, &y, &x);
+    cout << "Transformed " << x << "," << y << endl;
+
+    return global_factory->createPoint(Coordinate(y, x));
 }
 
 
+Polygon *wgsToUtmConv(Polygon *input, OGRCoordinateTransformation *conversion) {
+
+    CoordinateArraySequence* cl = new CoordinateArraySequence();
+
+    for (Coordinate coord : *input->getExteriorRing()->getCoordinates()->toVector()) {
+
+        cout << "Original " << coord.x << "," << coord.y << endl;
+        conversion->Transform(1, &coord.y, &coord.x);
+        cout << "Transformed " << coord.x << "," << coord.y << endl;
+
+        cl->add(coord);
+    }
+
+    LinearRing* lr = global_factory->createLinearRing(cl);
+    return global_factory->createPolygon(lr, nullptr);
+}
 
 // --------------------------------------------------------
 
-list<Vertex> findRoute(list<Geometry *> exclusionZones, Polygon* ffa, Point *startPoint, Point *endPointPoint, double gridSize) {
+Point *constrainToGrid(Point *point, int gridX, int gridY) {
+
+    int x = point->getX() + gridX / 2;
+    int y = point->getY() + gridY / 2;
+
+    x -= (x % gridX);
+    y -= (y % gridY);
+
+    return global_factory->createPoint(Coordinate(y, x));
+}
+
+// --------------------------------------------------------
+
+list<Vertex> findRoute(list<Polygon *> exclusionZones, Polygon* ffa, Point *startPointWGS, Point *endPointPointWGS, double gridSize) {
 
     list<Vertex> results;
 
-    string localUtm = epsgUtmCodeFromWgs(startPoint);
+    OGRSpatialReference wgsSRS; // lat then lon
+    wgsSRS.SetWellKnownGeogCS("WGS84");
 
-    PJ *wgsProd = proj_create(pjContext, "EPSG:4326");
-    if (wgsProd == nullptr) {
-        cout << "Couldn't make WGS object " << proj_errno_string(proj_context_errno(pjContext)) << endl;
+    OGRSpatialReference utmSRS;
+    utmSRS.SetProjCS("UTM");
+    utmSRS.importFromEPSG(epsgUtmCodeFromWgs(startPointWGS));
+
+    OGRCoordinateTransformation *wgsToUtm = OGRCreateCoordinateTransformation( &wgsSRS, &utmSRS);
+    OGRCoordinateTransformation *utmToWgs = OGRCreateCoordinateTransformation( &utmSRS, &wgsSRS);
+
+    if ( wgsToUtm == nullptr) {
+        cout << "Couldn't create transformation " << endl;
     }
 
-    string locaUtmEpsgCode = localUtm.c_str();
+    list<Polygon *> relevantZones;
 
-    PJ *utmProd = proj_create(pjContext, "EPSG:4326");
-    if (utmProd == nullptr) {
-        cout << "Couldn't make UTM object " << locaUtmEpsgCode << " " << proj_errno_string(proj_context_errno(pjContext)) << endl;
+    // Filter exclusion zones by intersection
+    for (Polygon *zn : exclusionZones) {
+        if (zn->intersects(ffa)) {
+            relevantZones.push_back(wgsToUtmConv(zn, wgsToUtm));
+        }
     }
 
 
 
-    PJ *wgsToUtm = proj_create_crs_to_crs(pjContext, "EPSG:4326", localUtm.c_str(), nullptr);
 
-    if (wgsToUtm == nullptr) {
-        cout << "Couldn't make transform object " << proj_errno_string(proj_context_errno(pjContext)) << endl;
-    }
-
-    Point *startPointUTM = wgsToUtmConv(startPoint, wgsToUtm);
-
-    wkt_print_geom("Start", startPointUTM);
-
+    CPLFree(wgsToUtm);
+    CPLFree(utmToWgs);
     return results;
 }
 
@@ -183,7 +228,7 @@ list<Vertex> findRoute(list<Geometry *> exclusionZones, Polygon* ffa, Point *sta
 int main(int argc, char **argv) {
     PrecisionModel* pm = new PrecisionModel(PrecisionModel::FLOATING );
     global_factory = GeometryFactory::create(pm, 4326);
-    pjContext = proj_context_create();
+    GDALAllRegister();
 
     list<Geometry *> exclusionZones;
 
@@ -202,10 +247,6 @@ int main(int argc, char **argv) {
     wkt_print_geoms(exclusionZones);
     wkt_print_geom("startPoint", startPoint);
     wkt_print_geom("endPointPoint", endPointPoint);
-
-    string startPointEpsgCode = epsgUtmCodeFromWgs(startPoint);
-    cout << startPointEpsgCode << endl;
-
 
     findRoute(exclusionZones, ffa, startPoint, endPointPoint, 5.0);
 

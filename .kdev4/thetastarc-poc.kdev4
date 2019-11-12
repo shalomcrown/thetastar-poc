@@ -35,3 +35,6 @@ Project Target=thetastarc-poc,thetastarcpoc
 Use External Terminal=false
 Working Directory=
 isExecutable=false
+
+[Project]
+VersionControlSupport=kdevgit
