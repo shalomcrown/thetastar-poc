@@ -10,7 +10,7 @@ set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/Modules)
 find_package(GEOS REQUIRED)
 find_package(GDAL REQUIRED)
 find_package(CGAL REQUIRED)
-find_package(Boost REQUIRED COMPONENTS system filesystem log log_setup random regex serialization iostreams graph  )
+find_package(Boost REQUIRED COMPONENTS system filesystem log log_setup random regex serialization iostreams graph)
 # optional parameter smartptr variant property_map
 
 
