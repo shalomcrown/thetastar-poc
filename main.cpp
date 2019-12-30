@@ -59,7 +59,7 @@ list<Point> zone3points = {{35.2594967539393,32.1872363481983},{35.2739069684505
                             {35.2672475339237,32.1710777537194},{35.2633053268627,32.1700086806181},{35.2584944979068,32.1718127414765},
                             {35.2517014292424,32.1780601374122},{35.2545522908458,32.1867018116477}/*,{35.2594967539393,32.1872363481983}*/};
 double startPointA[] = {35.27083396911621,32.175430856310406};
-double endPointA[] = {35.26203632354736, 32.17993497969751};
+double endPointA[] = {35.25917172431946, 32.17943554151385};// 32.17943554151385, longitude=35.25917172431946
 list<Point> snehYaakov = {{35.2639957699073,32.1808441819468},{35.2656439242718,32.1774142390802},{35.2644412170328,32.1747861010395},
                         {35.2610558188787,32.1749197351772},{35.2583831361255,32.1781269544811},{35.2587394938259,32.1804878242464},
                         {35.2619021684173,32.1790623934447},{35.2619021684173,32.1790623934447}/*,{35.2639957699073,32.1808441819468}*/};
@@ -116,6 +116,12 @@ public:
     long key;
     int id;
 
+
+    Vertex() {
+    	key = 0;
+    	id = -1;
+    }
+
     Vertex(UtmPoint pt, Vertex *_parent, int _id) : UtmPoint(pt) {
         id = _id;
         parent = _parent;
@@ -133,6 +139,20 @@ public:
         return x() == other.x() && y() == other.y();
     }
 
+    bool operator ==(Vertex *other) {
+        return x() == other->x() && y() == other->y();
+    }
+
+    inline bool operator <(Vertex *other) {
+        return gValue < other->gValue;
+    }
+
+    inline bool operator <(Vertex &other) {
+        return gValue < other.gValue;
+    }
+
+
+
     friend ostream& operator<<(ostream& out, Vertex& d) {
         out << "Vertex:" << d.id << " Parent:" << (d.parent == nullptr ? -1 : d.parent->id) << " gValue:" << d.gValue << " priorityValue:" << d.priorityValue << " (" << d.x() << "," << d.y()<< ")";
         return out;
@@ -142,22 +162,8 @@ public:
         out << "Vertex:" << d->id << " Parent:" << (d->parent == nullptr ? -1 : d->parent->id) << " gValue:" << d->gValue << " priorityValue:" << d->priorityValue << " (" << d->x() << "," << d->y()<< ")";
         return out;
     }
-
-
 };
 
-// --------------------------------------------------------
-
-// Polygon polygonFromArray(double pointArray[][2], int nPoints) {
-//
-//     Polygon poly;
-//
-//     for (int pointIndex = 0; pointIndex < nPoints; pointIndex++) {
-//         poly.boundary().push_back(Point(pointArray[pointIndex][1], pointArray[pointIndex][0]));
-//     }
-//
-//     return poly;
-// }
 
 // --------------------------------------------------------
 
@@ -181,6 +187,13 @@ int epsgUtmCodeFromWgs(Point& point) {
     }
 
     return epsgNumber;
+}
+
+//===================================================================
+
+ostream& operator<<(ostream& out, UtmPolygon& poly) {
+    for_each_point(poly.outer(), [](UtmPoint p){cout << "(" << p.x() << "," << p.y() << "),";});
+    return out;
 }
 
 // --------------------------------------------------------
@@ -255,9 +268,9 @@ bool hasLineofSight(Vertex *vertex1, Vertex *vertex2, UtmPolygon ffa, list<UtmPo
 
 // --------------------------------------------------------
 
-list<Vertex> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& startPointWGS, Point& endPointPointWGS, int gridSize) {
+list<Vertex *> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& startPointWGS, Point& endPointPointWGS, int gridSize) {
 
-    list<Vertex> results;
+    list<Vertex* > results;
 
     OGRSpatialReference wgsSRS; // lat then lon
     wgsSRS.SetWellKnownGeogCS("WGS84");
@@ -274,6 +287,7 @@ list<Vertex> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& sta
     }
 
     UtmPolygon ffa = wgsToUtmConv(ffaWGS, wgsToUtm);
+    cout << "FFA: " << ffa << endl;
 
     UtmPoint startPointA =  wgsToUtmConv(startPointWGS, wgsToUtm);
     UtmPoint startPoint = constrainToGrid(startPointA, gridSize);
@@ -283,7 +297,6 @@ list<Vertex> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& sta
 
     list<UtmPolygon> relevantZones;
 
-    return results;
     // Filter exclusion zones by intersection
     for (Polygon zn : exclusionZones) {
         if (overlaps(zn, ffaWGS)) {
@@ -293,27 +306,34 @@ list<Vertex> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& sta
 
 
     int vertexCounter = 0;
-    auto comp = [](Vertex *v1, Vertex *v2) {return v1->gValue < v2->gValue;};
     auto listComp = [](Vertex *v1, Vertex *v2) {return v1->key < v2->key;};
-    std::set<Vertex *, decltype(listComp)> openVerticesSet(listComp);
-    priority_queue<Vertex *, std::set<Vertex *, decltype(listComp)>, decltype(comp)> openVertices(comp);
-    list<Vertex *> closedVertices;
+    auto gComp = [] (Vertex *x, Vertex *y) {return x->gValue < y->gValue;};
 
-    Vertex start(startPoint, nullptr, vertexCounter++);
-    start.parent = &start;
-    start.gValue = 0.0;
-    start.priorityValue = comparable_distance(startPoint, endPoint);
-    cout << "Start: " << start << endl;
+    std::set<Vertex *, decltype(listComp)> closedVertices(listComp);
+    std::set<Vertex *, decltype(gComp)> openVertices(gComp);
 
-    Vertex end(endPoint, nullptr, -1);
-    cout << "End: " << end << endl;
 
-    openVertices.push(&start);
+    Vertex* start = new Vertex(startPoint, nullptr, vertexCounter++);
+    start->parent = start;
+    start->gValue = 0.0;
+    start->priorityValue = comparable_distance(startPoint, endPoint);
+    cout << "Start: " << *start << endl;
 
-    while (openVertices.top()->gValue < end.gValue /* + h(end), which is zero*/) {
-        Vertex *s = openVertices.top();
-        openVertices.pop();
-        closedVertices.push_back(s);
+    Vertex* end = new Vertex(endPoint, nullptr, -1);
+    cout << "End: " << *end << endl;
+
+    openVertices.insert(start);
+
+    while (openVertices.empty() == false) {
+    	auto top = openVertices.cbegin();
+
+    	if ((*(top))->gValue >= end->gValue /* + h(end), which is zero*/) {
+    		break;
+    	}
+
+        Vertex *s = *top;
+        openVertices.erase(top);
+        closedVertices.insert(s);
 
         Vertex *neighbours[] = {
             new Vertex(s->x() + gridSize, s->y(), s, vertexCounter++),
@@ -328,9 +348,19 @@ list<Vertex> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& sta
 
         for (Vertex* neighbour : neighbours) {
 
+            if (find_if(closedVertices.begin(), closedVertices.end(), [neighbour](Vertex *v1) {return *v1 == *neighbour;}) != closedVertices.end()) {
+                delete neighbour;
+                continue;
+            }
+
             UtmSegment leg(*s, *neighbour);
 
-            if (within(static_cast<UtmPoint>(*neighbour), ffa) == false || intersects(leg, ffa)) {
+            if (within(static_cast<UtmPoint>(*neighbour), ffa) == false) {
+                delete neighbour;
+                continue;
+            }
+
+            if (intersects(leg, ffa)) {
                 delete neighbour;
                 continue;
             }
@@ -342,23 +372,17 @@ list<Vertex> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& sta
                 }
             }
 
-
-
-            if (find_if(closedVertices.begin(), closedVertices.end(), [neighbour](Vertex *v1) {return *v1 == *neighbour;}) == closedVertices.end()) {
+            if (*neighbour == *end) {
                 delete neighbour;
-                continue;
-            }
+                neighbour = end;
 
-            if (*neighbour == end) {
-                delete neighbour;
-                neighbour = &end;
             } else {
-                auto maybeNeighbour = find_if(openVerticesSet.begin(), openVerticesSet.end(), [neighbour](Vertex *v1) {return *v1 == *neighbour;});
+                auto maybeNeighbour = openVertices.find(neighbour);
 
-                if (maybeNeighbour != openVerticesSet.end()) {
+                if (maybeNeighbour != openVertices.end()) {
                     delete neighbour;
                     neighbour = *maybeNeighbour;
-                    openVerticesSet.erase(*maybeNeighbour);
+                    openVertices.erase(maybeNeighbour);
                 }
             }
 
@@ -385,19 +409,27 @@ list<Vertex> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& sta
             }
 
             if (neighbour->gValue < oldGValue) {
-                neighbour->priorityValue = neighbour->gValue +comparable_distance(*(UtmPoint*)neighbour, static_cast<UtmPoint>(end));
-                openVertices.push(neighbour);
+                neighbour->priorityValue = neighbour->gValue + comparable_distance(*(UtmPoint*)neighbour, static_cast<UtmPoint>(*end));
+                openVertices.insert(neighbour);
             } else {
                 delete neighbour;
             }
         }
     }
 
-    for (Vertex *vertex  = &end; vertex != &start; vertex = vertex->parent) {
-        results.push_front(*vertex);
+    for (Vertex *vertex  = end; vertex != start; vertex = vertex->parent) {
+        results.push_front(vertex);
+
+        openVertices.erase(vertex);
+        closedVertices.erase(vertex);
     }
 
     results.push_front(start);
+    openVertices.erase(start);
+    closedVertices.erase(start);
+
+    std::for_each(openVertices.begin(), openVertices.end(), [](Vertex* vrt){ delete vrt; });
+    std::for_each(closedVertices.begin(), closedVertices.end(), [](Vertex* vrt){ delete vrt; });
 
     // -----------------------------------
     CPLFree(wgsToUtm);
@@ -412,8 +444,8 @@ int main(int argc, char **argv) {
 
     list<Polygon> exclusionZones;
 
-    Polygon ffa = Polygon({Ring(zone3points.begin(), zone3points.end())}); //polygonFromArray(zone3points, sizeof(zone3points) / sizeof(double) / 2);
-    Polygon exclusion1({Ring(snehYaakov.begin(), snehYaakov.end())});  // polygonFromArray(snehYaakov, sizeof(snehYaakov) / sizeof(double) / 2);
+    Polygon ffa = Polygon({Ring(zone3points.begin(), zone3points.end())});
+    Polygon exclusion1({Ring(snehYaakov.begin(), snehYaakov.end())});
 
     exclusionZones.push_back(exclusion1);
 
@@ -424,10 +456,10 @@ int main(int argc, char **argv) {
 
 //     cout << "Start:" << startPoint.outer() << " End:" << endPoint << endl;
 
-    list<Vertex> results = findRoute(exclusionZones, ffa, startPoint, endPoint, 5);
+    list<Vertex *> results = findRoute(exclusionZones, ffa, startPoint, endPoint, 5);
 
     cout << "results:";
-    for_each(results.begin(), results.end(), [](Vertex &v) {cout << "(" << v << ") ";});
+    for_each(results.begin(), results.end(), [](Vertex *v) {cout << "(" << *v << ") ";});
 
     return 0;
 }
