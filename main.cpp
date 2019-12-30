@@ -35,6 +35,7 @@
 #include <streambuf>
 #include <string>
 #include <algorithm>
+#include <utility>
 #include <boost/metaparse/start.hpp>
 #include <boost/metaparse/start.hpp>
 #include <boost/metaparse/start.hpp>
@@ -51,6 +52,7 @@ typedef model::ring<model::d2::point_xy<double> > Ring;
 typedef model::polygon<model::d2::point_xy<int> > UtmPolygon;
 typedef model::ring<model::d2::point_xy<int> > UtmRing;
 typedef model::segment<model::d2::point_xy<int> > UtmSegment;
+typedef model::linestring<model::d2::point_xy<int> > UtmLineString;
 
 
 list<Point> zone3points = {{35.2594967539393,32.1872363481983},{35.2739069684505,32.1869022628542},{35.2741742367258,32.1812450843598},
@@ -191,9 +193,14 @@ int epsgUtmCodeFromWgs(Point& point) {
 
 //===================================================================
 
-ostream& operator<<(ostream& out, UtmPolygon& poly) {
-    for_each_point(poly.outer(), [](UtmPoint p){cout << "(" << p.x() << "," << p.y() << "),";});
+template <typename T> ostream& operator<<(ostream& out, model::polygon<T>& poly) {
+    for_each_point(poly.outer(), [](T p){cout << "(" << p.x() << "," << p.y() << "),";});
     return out;
+}
+
+template <typename T> ostream& operator<<(ostream& out, model::d2::point_xy<T>& point) {
+	cout << "(" << point.x() << "," << point.y() << ")";
+	return out;
 }
 
 // --------------------------------------------------------
@@ -251,14 +258,14 @@ UtmPoint constrainToGrid(UtmPoint& point, int grid) {
 
 bool hasLineofSight(Vertex *vertex1, Vertex *vertex2, UtmPolygon ffa, list<UtmPolygon> exclusionZones) {
 
-    UtmSegment leg(*vertex1, *vertex2);
+    UtmLineString leggy({*vertex1, *vertex2});
 
-    if (intersects(leg, ffa)) {
+    if (within(leggy, ffa) == false) {
         return false;
     }
 
     for (UtmPolygon excl : exclusionZones) {
-        if (intersects(leg, excl)) {
+        if (intersects(leggy, excl)) {
             return false;
         }
     }
@@ -266,6 +273,42 @@ bool hasLineofSight(Vertex *vertex1, Vertex *vertex2, UtmPolygon ffa, list<UtmPo
     return true;
 }
 
+//===================================================================
+
+class GComp {
+public:
+	bool operator() (Vertex *x, Vertex *y) {
+		return x->gValue < y->gValue;
+	};
+};
+
+
+
+class ListComp {
+public:
+	bool operator()(Vertex *v1, Vertex *v2) {
+		return v1->key < v2->key;
+	};
+};
+
+class ListEquality {
+public:
+	Vertex *v2;
+	ListEquality(Vertex *_v2) : v2{_v2} {}
+
+	bool operator()(Vertex *v1) {
+		return v1->key == v2->key;
+	};
+};
+
+
+bool gcomp(Vertex *x, Vertex *y) {
+	return x->gValue < y->gValue;
+};
+
+bool listComp(Vertex *v1, Vertex *v2) {
+	return v1->key < v2->key;
+};
 // --------------------------------------------------------
 
 list<Vertex *> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& startPointWGS, Point& endPointPointWGS, int gridSize) {
@@ -289,8 +332,13 @@ list<Vertex *> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& s
     UtmPolygon ffa = wgsToUtmConv(ffaWGS, wgsToUtm);
     cout << "FFA: " << ffa << endl;
 
+    cout << "Start point WGS:" << startPointWGS << endl;
+
     UtmPoint startPointA =  wgsToUtmConv(startPointWGS, wgsToUtm);
     UtmPoint startPoint = constrainToGrid(startPointA, gridSize);
+
+    cout << "Start point UTM:" << startPointA << endl;
+    cout << "Start point Constrained:" << startPoint << endl;
 
     UtmPoint endPointA = wgsToUtmConv(endPointPointWGS, wgsToUtm);
     UtmPoint endPoint = constrainToGrid(endPointA, gridSize);
@@ -306,17 +354,16 @@ list<Vertex *> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& s
 
 
     int vertexCounter = 0;
-    auto listComp = [](Vertex *v1, Vertex *v2) {return v1->key < v2->key;};
-    auto gComp = [] (Vertex *x, Vertex *y) {return x->gValue < y->gValue;};
 
-    std::set<Vertex *, decltype(listComp)> closedVertices(listComp);
-    std::set<Vertex *, decltype(gComp)> openVertices(gComp);
+    std::set<Vertex *, ListComp> closedVertices;
+    std::set<Vertex *, ListComp> openVerticesSet;
+    std::multiset<Vertex *, GComp> openVertices;
 
 
     Vertex* start = new Vertex(startPoint, nullptr, vertexCounter++);
     start->parent = start;
     start->gValue = 0.0;
-    start->priorityValue = comparable_distance(startPoint, endPoint);
+    start->priorityValue = distance(startPoint, endPoint);
     cout << "Start: " << *start << endl;
 
     Vertex* end = new Vertex(endPoint, nullptr, -1);
@@ -325,15 +372,22 @@ list<Vertex *> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& s
     openVertices.insert(start);
 
     while (openVertices.empty() == false) {
-    	auto top = openVertices.cbegin();
+//        cout << "-------------" << endl << "Open Vertices:" << endl;
+//        for_each(openVertices.begin(), openVertices.end(), [](Vertex *p) {cout << p << endl;});
 
-    	if ((*(top))->gValue >= end->gValue /* + h(end), which is zero*/) {
+        Vertex *s = *openVertices.begin();
+        openVertices.erase(openVertices.begin());
+    	openVerticesSet.erase(s);
+
+    	if (s->gValue >= end->gValue /* + h(end), which is zero*/) {
     		break;
     	}
 
-        Vertex *s = *top;
-        openVertices.erase(top);
         closedVertices.insert(s);
+
+//        cout << "Working on: " << s << endl;
+//        cout << "-------------" << endl << "Open Vertices:" << endl;
+//        for_each(openVertices.begin(), openVertices.end(), [](Vertex *p) {cout << p << endl;});
 
         Vertex *neighbours[] = {
             new Vertex(s->x() + gridSize, s->y(), s, vertexCounter++),
@@ -348,19 +402,20 @@ list<Vertex *> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& s
 
         for (Vertex* neighbour : neighbours) {
 
-            if (find_if(closedVertices.begin(), closedVertices.end(), [neighbour](Vertex *v1) {return *v1 == *neighbour;}) != closedVertices.end()) {
+        	if (closedVertices.find(neighbour) != closedVertices.end()) {
                 delete neighbour;
                 continue;
-            }
+        	}
 
             UtmSegment leg(*s, *neighbour);
+            UtmLineString leggy({*s, *neighbour});
 
             if (within(static_cast<UtmPoint>(*neighbour), ffa) == false) {
                 delete neighbour;
                 continue;
             }
 
-            if (intersects(leg, ffa)) {
+            if (within(leggy, ffa) == false) {
                 delete neighbour;
                 continue;
             }
@@ -372,24 +427,28 @@ list<Vertex *> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& s
                 }
             }
 
+            bool areadyInHeap = false;
+            auto maybeNeighbour = openVerticesSet.find(neighbour);
+
             if (*neighbour == *end) {
                 delete neighbour;
                 neighbour = end;
 
             } else {
-                auto maybeNeighbour = openVertices.find(neighbour);
 
-                if (maybeNeighbour != openVertices.end()) {
+                if (maybeNeighbour != openVerticesSet.end()) {
+                    cout << "Already in open set:" << neighbour << " and " << *maybeNeighbour << endl;
                     delete neighbour;
+
                     neighbour = *maybeNeighbour;
-                    openVertices.erase(maybeNeighbour);
+                    areadyInHeap = true;
                 }
             }
 
             double oldGValue = neighbour->gValue;
 
             if (hasLineofSight(neighbour, s->parent, ffa, relevantZones)) {
-                double parentDistance = comparable_distance(*(UtmPoint*)neighbour, *(UtmPoint*)(s->parent));
+                double parentDistance = distance(*(UtmPoint*)neighbour, *(UtmPoint*)(s->parent));
 
                 double tentativeGValue = s->parent->gValue + parentDistance;
 
@@ -399,7 +458,7 @@ list<Vertex *> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& s
                     neighbour->localParent = s;
                 }
             } else {
-                double dist = comparable_distance(*(UtmPoint*)s, *(UtmPoint*)neighbour);
+                double dist = distance(*(UtmPoint*)s, *(UtmPoint*)neighbour);
 
                 if (s->gValue + dist < neighbour->gValue) {
                     neighbour->parent = s;
@@ -409,15 +468,26 @@ list<Vertex *> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& s
             }
 
             if (neighbour->gValue < oldGValue) {
-                neighbour->priorityValue = neighbour->gValue + comparable_distance(*(UtmPoint*)neighbour, static_cast<UtmPoint>(*end));
+                neighbour->priorityValue = neighbour->gValue + distance(*(UtmPoint*)neighbour, static_cast<UtmPoint>(*end));
+
+                if (areadyInHeap) {
+                    auto it = std::find_if(openVertices.begin(), openVertices.end(),  [neighbour](Vertex *p){return *p == *neighbour;});
+                    openVertices.erase(it);
+                } else {
+                	openVerticesSet.insert(neighbour);
+                }
+
                 openVertices.insert(neighbour);
-            } else {
+
+//                cout << "Insert: " << neighbour << " Replace:" << areadyInHeap << endl;
+            } else if (areadyInHeap == false && neighbour != end) {
                 delete neighbour;
             }
         }
     }
 
-    for (Vertex *vertex  = end; vertex != start; vertex = vertex->parent) {
+    for (Vertex *vertex  = end; vertex != start && vertex != nullptr; vertex = vertex->parent) {
+    	cout << "Result: " << vertex << endl;
         results.push_front(vertex);
 
         openVertices.erase(vertex);
@@ -449,12 +519,8 @@ int main(int argc, char **argv) {
 
     exclusionZones.push_back(exclusion1);
 
-//     cout << "FFA: " << ffa.outer() << endl;
-
-    Point startPoint(startPointA[1], startPointA[0]);
-    Point endPoint(endPointA[1], endPointA[0]);
-
-//     cout << "Start:" << startPoint.outer() << " End:" << endPoint << endl;
+    Point startPoint(startPointA[0], startPointA[1]);
+    Point endPoint(endPointA[0], endPointA[1]);
 
     list<Vertex *> results = findRoute(exclusionZones, ffa, startPoint, endPoint, 5);
 
