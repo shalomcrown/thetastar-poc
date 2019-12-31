@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document id="root_doc">
+<Schema name="Shark1" id="Shark1">
+	<SimpleField name="Drawings" type="string"></SimpleField>
+</Schema>
+<Folder><name>Shark1</name>
+  <Placemark>
+	<Style><LineStyle><color>ff0000ff</color></LineStyle><PolyStyle><fill>0</fill></PolyStyle></Style>
+	<ExtendedData><SchemaData schemaUrl="#Shark1">
+		<SimpleData name="Drawings">Shark1</SimpleData>
+	</SchemaData></ExtendedData>
+      <Polygon><outerBoundaryIs><LinearRing><coordinates>35.2756524267426,32.1713110693931 35.2754209325841,32.1717455661212 35.2752001227715,32.1712469633185 35.2756524267426,32.1713110693931</coordinates></LinearRing></outerBoundaryIs></Polygon>
+  </Placemark>
+</Folder>
+</Document></kml>

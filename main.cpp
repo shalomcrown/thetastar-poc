@@ -21,6 +21,8 @@
 #include <boost/geometry/geometries/adapted/boost_tuple.hpp>
 
 #include "gdal_priv.h"
+#include "gdal.h"
+#include "ogrsf_frmts.h"
 #include "cpl_conv.h"
 #include <limits>
 #include <vector>
@@ -59,7 +61,8 @@ list<Point> zone3points = {{35.2594967539393,32.1872363481983},{35.2739069684505
                             {35.2703879361587,32.1780378650559},{35.2673143509925,32.1782605886187},{35.2666684526605,32.17723606023},
                             {35.2675816192678,32.1759442635659},{35.2706774767903,32.177080153736},{35.271151095,32.175571259},
                             {35.2672475339237,32.1710777537194},{35.2633053268627,32.1700086806181},{35.2584944979068,32.1718127414765},
-                            {35.2517014292424,32.1780601374122},{35.2545522908458,32.1867018116477}/*,{35.2594967539393,32.1872363481983}*/};
+                            {35.2517014292424,32.1780601374122},{35.2545522908458,32.1867018116477}
+							/*,{35.2594967539393,32.1872363481983}*/};
 double startPointA[] = {35.27083396911621,32.175430856310406};
 double endPointA[] = {35.25917172431946, 32.17943554151385};// 32.17943554151385, longitude=35.25917172431946
 list<Point> snehYaakov = {{35.2639957699073,32.1808441819468},{35.2656439242718,32.1774142390802},{35.2644412170328,32.1747861010395},
@@ -117,7 +120,6 @@ public:
     bool owned = false;
     long key;
     int id;
-
 
     Vertex() {
     	key = 0;
@@ -347,13 +349,15 @@ list<Vertex *> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& s
 
     // Filter exclusion zones by intersection
     for (Polygon zn : exclusionZones) {
-        if (overlaps(zn, ffaWGS)) {
+        if (within(zn.outer(), ffaWGS.outer())
+        		|| intersects(zn.outer(), ffaWGS.outer())) {
             relevantZones.push_back(wgsToUtmConv(zn, wgsToUtm));
         }
     }
 
 
     int vertexCounter = 0;
+    int loopCounter = 0;
 
     std::set<Vertex *, ListComp> closedVertices;
     std::set<Vertex *, ListComp> openVerticesSet;
@@ -389,6 +393,13 @@ list<Vertex *> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& s
 //        cout << "-------------" << endl << "Open Vertices:" << endl;
 //        for_each(openVertices.begin(), openVertices.end(), [](Vertex *p) {cout << p << endl;});
 
+        if (loopCounter++ % 1000 == 0) {
+        	cout << "Vertex count: " << vertexCounter << "' Open vertices: " << openVertices.size()
+					<< " (" << openVerticesSet.size() << ")"
+        			<< "' Closed vertices: " <<  closedVertices.size()
+					<< "' Top: " << s << endl;
+        }
+
         Vertex *neighbours[] = {
             new Vertex(s->x() + gridSize, s->y(), s, vertexCounter++),
             new Vertex(s->x() - gridSize, s->y(), s, vertexCounter++),
@@ -420,12 +431,19 @@ list<Vertex *> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& s
                 continue;
             }
 
+            bool inExclusionZone = false;
             for (UtmPolygon excl : relevantZones) {
                 if (within(static_cast<UtmPoint>(*neighbour), excl) || intersects(leg, excl)) {
-                    delete neighbour;
-                    continue;
+                	inExclusionZone = true;
+                    break;
                 }
             }
+
+            if (inExclusionZone) {
+				delete neighbour;
+				continue;
+            }
+
 
             bool areadyInHeap = false;
             auto maybeNeighbour = openVerticesSet.find(neighbour);
@@ -437,7 +455,7 @@ list<Vertex *> findRoute(list<Polygon> exclusionZones, Polygon& ffaWGS, Point& s
             } else {
 
                 if (maybeNeighbour != openVerticesSet.end()) {
-                    cout << "Already in open set:" << neighbour << " and " << *maybeNeighbour << endl;
+//                    cout << "Already in open set:" << neighbour << " and " << *maybeNeighbour << endl;
                     delete neighbour;
 
                     neighbour = *maybeNeighbour;
@@ -513,6 +531,32 @@ int main(int argc, char **argv) {
     GDALAllRegister();
 
     list<Polygon> exclusionZones;
+
+    GDALDataset *pds = static_cast<GDALDataset *>(GDALOpenEx("Bashes-SHomron.kml", GDAL_OF_VECTOR, nullptr, nullptr, nullptr));
+
+    for(OGRLayer *poLayer: pds->GetLayers()) {
+    	cout << "Layer" << endl;
+    	OGRFeature *poFeature;
+
+    	while((poFeature = poLayer->GetNextFeature()) != nullptr ) {
+    		for( auto&& oField: *poFeature ) {
+    			cout << "Type:" << oField.GetType() << endl;
+
+    			switch (oField.GetType()) {
+    			case OFTInteger: cout << oField.GetInteger() << endl; break;
+    			case OFTInteger64: cout << oField.GetInteger64() << endl; break;
+    			case OFTReal: cout << oField.GetDouble() << endl; break;
+    			case OFTString: cout << oField.GetAsString() << endl; break;
+    			default: cout << oField.GetAsString() << endl; break;
+    			}
+    		}
+
+
+    		OGRGeometry *poGeometry;
+    		poGeometry = poFeature->GetGeometryRef();
+
+    	}
+    }
 
     Polygon ffa = Polygon({Ring(zone3points.begin(), zone3points.end())});
     Polygon exclusion1({Ring(snehYaakov.begin(), snehYaakov.end())});
